@@ -92,6 +92,15 @@ fn appearance_and_close_options_preserve_defaults() -> anyhow::Result<()> {
 }
 
 #[test]
+fn closed_lid_mode_is_opt_in() -> anyhow::Result<()> {
+    assert!(!Config::default().keep_awake_lid_closed);
+    assert!(!Config::parse(DEFAULT_CONFIG)?.keep_awake_lid_closed);
+    assert!(Config::parse("keep_awake_lid_closed = true")?.keep_awake_lid_closed);
+    assert!(Config::parse("keep_awake_lid_closed = 1").is_err());
+    Ok(())
+}
+
+#[test]
 fn links_open_in_the_system_browser_unless_configured() -> anyhow::Result<()> {
     assert_eq!(Config::parse("")?.open_links_in, LinkTarget::System);
     assert_eq!(

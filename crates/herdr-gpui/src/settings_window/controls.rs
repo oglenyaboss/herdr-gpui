@@ -705,6 +705,17 @@ impl SettingsWindow {
                 ),
                 cx,
             ))
+            .when(crate::caffeine::SUPPORTED, |card| {
+                card.child(self.preference_switch(
+                    "settings-keep-awake-lid-closed",
+                    "Keep running with the lid closed while the cup is on",
+                    self.config.keep_awake_lid_closed,
+                    crate::config::preferences::Preference::KeepAwakeLidClosed(
+                        !self.config.keep_awake_lid_closed,
+                    ),
+                    cx,
+                ))
+            })
             .child(self.preference_switch(
                 "settings-confirm-close",
                 "Confirm tab close",

@@ -1,13 +1,16 @@
-//! Keeps the display awake on request, like the Caffeine menu-bar app.
+//! Keeps the display awake on request, like the Caffeine menu-bar app, and,
+//! when the config asks for it, keeps the Mac running with its lid closed.
 //!
 //! The assertion belongs to a `caffeinate` child rather than to IOKit calls
 //! made here, so no `unsafe` is needed. `-w` ties the child to this process:
 //! a crash or quit releases the display without any cleanup on our side. The
 //! state is app-wide, so every window's status bar shows the same cup.
 
-use crate::Result;
-use gpui::{App, Global};
+use crate::{HerdrWindow, Result};
+use gpui::{App, Global, WeakEntity};
 use std::process::Child;
+
+mod lid;
 
 /// Only macOS ships `caffeinate`; other platforms do not show the toggle.
 pub(crate) const SUPPORTED: bool = cfg!(target_os = "macos");
@@ -15,6 +18,7 @@ pub(crate) const SUPPORTED: bool = cfg!(target_os = "macos");
 #[derive(Default)]
 struct Caffeine {
     child: Option<Child>,
+    lid: lid::Lid,
 }
 
 impl Global for Caffeine {}
@@ -38,9 +42,45 @@ pub(crate) fn active(cx: &App) -> bool {
         .is_some_and(|caffeine| caffeine.child.is_some())
 }
 
+/// The cup's tooltip: what a click does, or what is being held.
+pub(crate) fn tooltip(lid_closed: bool, cx: &App) -> &'static str {
+    let held = cx
+        .try_global::<Caffeine>()
+        .is_some_and(|caffeine| caffeine.lid.held());
+    match (active(cx), lid_closed, held) {
+        (true, _, true) => "Keeping the Mac awake, even with the lid closed",
+        (true, _, false) => "Keeping the display awake",
+        (false, true, _) => "Keep the Mac awake, even with the lid closed",
+        (false, false, _) => "Keep the display awake",
+    }
+}
+
 /// Starts or stops keeping the display awake, and redraws every window.
-pub(crate) fn toggle(cx: &mut App) -> Result<()> {
-    toggle_with(cx, spawn)
+/// With `lid_closed`, the cup also keeps the Mac running with its lid closed;
+/// that part finishes in the background and reports failures to `window`.
+pub(crate) fn toggle(
+    lid_closed: bool,
+    window: WeakEntity<HerdrWindow>,
+    cx: &mut App,
+) -> Result<()> {
+    toggle_with(cx, spawn)?;
+    lid::want(active(cx) && lid_closed, warn_in(window), cx);
+    Ok(())
+}
+
+/// Follows a reloaded config's closed-lid preference while the cup is on.
+pub(crate) fn set_lid_closed(lid_closed: bool, window: WeakEntity<HerdrWindow>, cx: &mut App) {
+    if SUPPORTED && cx.has_global::<Caffeine>() {
+        lid::want(active(cx) && lid_closed, warn_in(window), cx);
+    }
+}
+
+fn warn_in(window: WeakEntity<HerdrWindow>) -> impl Fn(crate::Error, &mut App) + Clone + 'static {
+    move |error, cx| {
+        let _ = window.update(cx, |window, cx| {
+            window.show_flash(crate::window::Flash::warning(error.to_string()), cx);
+        });
+    }
 }
 
 fn toggle_with(cx: &mut App, start: impl FnOnce() -> std::io::Result<Child>) -> Result<()> {

@@ -52,6 +52,11 @@ agent_checkpoints = true
 # scanned every five seconds with ss or lsof, a remote one over SSH; false
 # stops all scanning. Also under Settings > General.
 show_listening_ports = true
+# macOS only: while the status bar's cup is on, also keep the Mac running with
+# its lid closed. The first use asks for an administrator password to install
+# a sudoers rule that allows only `pmset disablesleep 1` and `0`; sleep is
+# restored when the cup turns off or Herdr quits. Also under Settings > General.
+keep_awake_lid_closed = false
 # macOS only: whether Option-letter reaches a pane as an Alt shortcut (Alt-P
 # for Option-P) or types the character the keyboard layout puts there. "auto"
 # sends Alt on the U.S. and ABC layouts and types elsewhere, so layouts that

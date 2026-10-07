@@ -249,6 +249,11 @@ impl HerdrWindow {
                         });
                         this.font_size_saves.apply_pending(&mut config);
                         this.config = config;
+                        crate::caffeine::set_lid_closed(
+                            this.config.keep_awake_lid_closed,
+                            cx.entity().downgrade(),
+                            cx,
+                        );
                         this.gui_config_diagnostic.sync(this.config.diagnostic().as_deref());
                         crate::settings_window::apply_loaded_theme(&mut this.config, &mut this.theme, theme_revision, cx);
                         this.tick_toasts(

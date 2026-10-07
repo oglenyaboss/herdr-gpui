@@ -66,6 +66,22 @@ pub enum Error {
     SoundCancelled,
     #[error("Could not keep the display awake")]
     Caffeine(#[source] io::Error),
+    #[error("Could not {operation}")]
+    LidCommand {
+        operation: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error("Could not {operation} ({status}){}", if detail.is_empty() { String::new() } else { format!(": {detail}") })]
+    LidCommandFailed {
+        operation: &'static str,
+        status: std::process::ExitStatus,
+        detail: String,
+    },
+    #[error(
+        "Sleep with the lid closed may still be off ({0}). Run `sudo pmset disablesleep 0` to restore it."
+    )]
+    LidRelease(std::process::ExitStatus),
     #[error(
         "PR lookup requires your owned local session socket or a saved SSH device. Other socket locations are unsupported."
     )]

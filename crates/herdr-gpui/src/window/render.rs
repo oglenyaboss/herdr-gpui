@@ -810,6 +810,7 @@ impl Render for HerdrWindow {
                     .children(self.render_system_load())
                     .when(crate::caffeine::SUPPORTED, |bar| {
                         let awake = crate::caffeine::active(cx);
+                        let tooltip = crate::caffeine::tooltip(self.config.keep_awake_lid_closed, cx);
                         let (foreground, surface) = (self.theme.foreground, self.theme.surface);
                         bar.child(
                             div()
@@ -839,18 +840,16 @@ impl Render for HerdrWindow {
                                 )
                                 .tooltip(move |_, cx| {
                                     cx.new(|_| crate::usage::Hint {
-                                        text: if awake {
-                                            "Keeping the display awake".into()
-                                        } else {
-                                            "Keep the display awake".into()
-                                        },
+                                        text: tooltip.into(),
                                         foreground,
                                         surface,
                                     })
                                     .into()
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Err(error) = crate::caffeine::toggle(cx) {
+                                    let lid_closed = this.config.keep_awake_lid_closed;
+                                    let window = cx.entity().downgrade();
+                                    if let Err(error) = crate::caffeine::toggle(lid_closed, window, cx) {
                                         this.show_flash(
                                             super::Flash::warning(error.to_string()),
                                             cx,
