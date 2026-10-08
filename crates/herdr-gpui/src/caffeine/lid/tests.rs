@@ -31,7 +31,7 @@ fn log(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("log")).unwrap_or_default()
 }
 
-type Reported = Rc<RefCell<Vec<Error>>>;
+type Reported = Rc<RefCell<Vec<Failure>>>;
 
 fn install(commands: Commands, cx: &mut TestAppContext) -> Reported {
     cx.update(|cx| cx.default_global::<Caffeine>().lid.commands = commands);
@@ -43,7 +43,7 @@ fn want_now(wanted: bool, reported: &Reported, cx: &mut TestAppContext) {
     cx.update(|cx| {
         want(
             wanted,
-            move |error, _| reported.borrow_mut().push(error),
+            move |failure, _| reported.borrow_mut().push(failure),
             cx,
         )
     });
@@ -120,8 +120,31 @@ fn a_cancelled_password_dialog_reports_and_is_not_retried(cx: &mut TestAppContex
     let reported = reported.borrow();
     assert!(matches!(
         reported.as_slice(),
-        [Error::LidCommandFailed { operation: "allow Herdr to change lid sleep", detail, .. }]
-            if detail == "User canceled. (-128)"
+        [Failure::Hold(Error::LidPasswordCancelled)]
+    ));
+}
+
+#[gpui::test]
+fn other_install_failures_keep_their_detail(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let reported = install(
+        fakes(
+            dir.path(),
+            "exit 1",
+            "echo 'visudo: syntax error' >&2; exit 1",
+            "read line",
+        ),
+        cx,
+    );
+
+    want_now(true, &reported, cx);
+    cx.run_until_parked();
+    assert!(!held(cx));
+    let reported = reported.borrow();
+    assert!(matches!(
+        reported.as_slice(),
+        [Failure::Hold(Error::LidCommandFailed { operation: "allow Herdr to change lid sleep", detail, .. })]
+            if detail == "visudo: syntax error"
     ));
 }
 
@@ -144,12 +167,11 @@ fn a_failed_restore_tells_the_user_how_to_finish_it(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!held(cx));
     let reported = reported.borrow();
-    assert!(matches!(reported.as_slice(), [Error::LidRelease(status)] if status.code() == Some(3)));
-    assert!(
-        reported[0]
-            .to_string()
-            .contains("sudo pmset disablesleep 0")
-    );
+    assert!(matches!(
+        reported.as_slice(),
+        [Failure::Release(error @ Error::LidRelease(status))]
+            if status.code() == Some(3) && error.to_string().contains("sudo pmset disablesleep 0")
+    ));
 }
 
 #[gpui::test]

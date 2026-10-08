@@ -6,7 +6,10 @@
 //! a crash or quit releases the display without any cleanup on our side. The
 //! state is app-wide, so every window's status bar shows the same cup.
 
-use crate::{HerdrWindow, Result};
+use crate::{
+    HerdrWindow, Result,
+    config::{Config, preferences::Preference},
+};
 use gpui::{App, Global, WeakEntity};
 use std::process::Child;
 
@@ -75,9 +78,23 @@ pub(crate) fn set_lid_closed(lid_closed: bool, window: WeakEntity<HerdrWindow>, 
     }
 }
 
-fn warn_in(window: WeakEntity<HerdrWindow>) -> impl Fn(crate::Error, &mut App) + Clone + 'static {
-    move |error, cx| {
+/// Shows a failure in `window`; a refused hold also turns the preference off,
+/// so the switch never claims a mode that is not running.
+fn warn_in(window: WeakEntity<HerdrWindow>) -> impl Fn(lid::Failure, &mut App) + Clone + 'static {
+    move |failure, cx| {
         let _ = window.update(cx, |window, cx| {
+            let error = match failure {
+                lid::Failure::Hold(error) => {
+                    if window.config.keep_awake_lid_closed {
+                        window.save_preference(
+                            || Config::save_preference(Preference::KeepAwakeLidClosed(false)),
+                            cx,
+                        );
+                    }
+                    error
+                }
+                lid::Failure::Release(error) => error,
+            };
             window.show_flash(crate::window::Flash::warning(error.to_string()), cx);
         });
     }

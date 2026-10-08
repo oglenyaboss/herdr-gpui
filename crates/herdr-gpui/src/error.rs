@@ -79,6 +79,10 @@ pub enum Error {
         detail: String,
     },
     #[error(
+        "Running with the lid closed needs your administrator password once, so it was turned off."
+    )]
+    LidPasswordCancelled,
+    #[error(
         "Sleep with the lid closed may still be off ({0}). Run `sudo pmset disablesleep 0` to restore it."
     )]
     LidRelease(std::process::ExitStatus),

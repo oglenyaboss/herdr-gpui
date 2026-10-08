@@ -26,6 +26,13 @@ pub(super) struct Lid {
     commands: Commands,
 }
 
+/// A failed step: a refused hold means the preference no longer describes
+/// what the Mac does, so the caller turns it off.
+pub(super) enum Failure {
+    Hold(Error),
+    Release(Error),
+}
+
 impl Lid {
     pub(super) fn held(&self) -> bool {
         matches!(self.state, State::Held(_))
@@ -82,23 +89,27 @@ impl Default for Commands {
 }
 
 /// Records whether sleep should stay disabled, and starts moving toward it.
-pub(super) fn want(wanted: bool, report: impl Fn(Error, &mut App) + Clone + 'static, cx: &mut App) {
+pub(super) fn want(
+    wanted: bool,
+    report: impl Fn(Failure, &mut App) + Clone + 'static,
+    cx: &mut App,
+) {
     cx.default_global::<Caffeine>().lid.wanted = wanted;
     sync(report, cx);
 }
 
 /// Runs at most one command at a time; whatever changed meanwhile is picked
 /// up when it settles.
-fn sync(report: impl Fn(Error, &mut App) + Clone + 'static, cx: &mut App) {
+fn sync(report: impl Fn(Failure, &mut App) + Clone + 'static, cx: &mut App) {
     let lid = &mut cx.default_global::<Caffeine>().lid;
     let commands = lid.commands.clone();
     let work = match (std::mem::take(&mut lid.state), lid.wanted) {
         (State::Allowed, true) => cx
             .background_executor()
-            .spawn(async move { hold(&commands).map(Some) }),
+            .spawn(async move { hold(&commands).map(Some).map_err(Failure::Hold) }),
         (State::Held(watcher), false) => cx
             .background_executor()
-            .spawn(async move { release(watcher).map(|()| None) }),
+            .spawn(async move { release(watcher).map(|()| None).map_err(Failure::Release) }),
         (state, _) => {
             lid.state = state;
             return;
@@ -118,17 +129,19 @@ fn sync(report: impl Fn(Error, &mut App) + Clone + 'static, cx: &mut App) {
                     lid.state = State::Allowed;
                     None
                 }
-                Err(error) => {
+                Err(failure) => {
                     // A refused hold is not retried until the cup or the
                     // preference changes again.
                     lid.state = State::Allowed;
-                    lid.wanted = false;
-                    Some(error)
+                    if matches!(failure, Failure::Hold(_)) {
+                        lid.wanted = false;
+                    }
+                    Some(failure)
                 }
             };
             cx.refresh_windows();
-            if let Some(error) = failure {
-                report.clone()(error, cx);
+            if let Some(failure) = failure {
+                report.clone()(failure, cx);
             }
             sync(report, cx);
         });
@@ -154,7 +167,7 @@ fn hold(commands: &Commands) -> Result<Child> {
         "keep the Mac running with the lid closed",
     )
     .or_else(|_| {
-        run(&commands.install_rule, "allow Herdr to change lid sleep")?;
+        run(&commands.install_rule, "allow Herdr to change lid sleep").map_err(cancelled)?;
         run(
             &commands.disable_sleep,
             "keep the Mac running with the lid closed",
@@ -167,6 +180,17 @@ fn hold(commands: &Commands) -> Result<Child> {
             let _ = release(watcher);
             Err(error)
         }
+    }
+}
+
+/// The password dialog's Cancel button exits `osascript` with AppleScript's
+/// userCanceledErr, -128; anything else stays a command failure.
+fn cancelled(error: Error) -> Error {
+    match error {
+        Error::LidCommandFailed { ref detail, .. } if detail.ends_with("(-128)") => {
+            Error::LidPasswordCancelled
+        }
+        error => error,
     }
 }
 
