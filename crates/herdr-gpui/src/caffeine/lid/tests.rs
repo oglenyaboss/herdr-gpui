@@ -5,25 +5,29 @@ use gpui::TestAppContext;
 use std::{cell::RefCell, path::Path, rc::Rc};
 
 /// Every fake step appends its name to `log`, so tests read the order back.
-fn shell(script: String) -> Vec<String> {
-    vec!["/bin/sh".into(), "-c".into(), script]
-}
-
-fn fakes(dir: &Path, disable_sleep: &str, install_rule: &str, watcher: &str) -> Commands {
-    let at = |script: &str| shell(format!("cd '{}' && {script}", dir.display()));
+fn fakes(
+    dir: &Path,
+    held_elsewhere: &str,
+    disable_sleep: &str,
+    restore_sleep: &str,
+    install_rule: &str,
+) -> Commands {
+    let at = |script: &str| format!("{{ cd '{}' && {script}; }}", dir.display());
     Commands {
+        held_elsewhere: at(held_elsewhere),
         disable_sleep: at(disable_sleep),
-        install_rule: at(install_rule),
-        watcher: at(watcher),
+        restore_sleep: at(restore_sleep),
+        install_rule: vec!["/bin/sh".into(), "-c".into(), at(install_rule)],
     }
 }
 
 fn working(dir: &Path) -> Commands {
     fakes(
         dir,
+        "false",
         "echo hold >> log",
+        "echo release >> log",
         "echo install >> log",
-        "read line; echo release >> log",
     )
 }
 
@@ -76,9 +80,10 @@ fn installs_the_rule_only_when_sudo_refuses(cx: &mut TestAppContext) {
     let reported = install(
         fakes(
             dir.path(),
+            "false",
             "test -e rule && echo hold >> log",
+            "echo release >> log",
             "touch rule && echo install >> log",
-            "read line; echo release >> log",
         ),
         cx,
     );
@@ -104,9 +109,10 @@ fn a_cancelled_password_dialog_reports_and_is_not_retried(cx: &mut TestAppContex
     let reported = install(
         fakes(
             dir.path(),
+            "false",
             "exit 1",
+            "echo release >> log",
             "echo 'User canceled. (-128)' >&2; exit 1",
-            "read line; echo release >> log",
         ),
         cx,
     );
@@ -115,8 +121,8 @@ fn a_cancelled_password_dialog_reports_and_is_not_retried(cx: &mut TestAppContex
     cx.run_until_parked();
     assert!(!held(cx));
     assert!(!cx.read_global::<Caffeine, _>(|caffeine, _| caffeine.lid.wanted));
-    // The watcher still ran its restore, which is harmless here.
-    assert_eq!(log(dir.path()), "release\n");
+    // Sleep was never disabled, so there was nothing to restore.
+    assert_eq!(log(dir.path()), "");
     let reported = reported.borrow();
     assert!(matches!(
         reported.as_slice(),
@@ -130,9 +136,10 @@ fn other_install_failures_keep_their_detail(cx: &mut TestAppContext) {
     let reported = install(
         fakes(
             dir.path(),
+            "false",
             "exit 1",
+            "true",
             "echo 'visudo: syntax error' >&2; exit 1",
-            "read line",
         ),
         cx,
     );
@@ -152,12 +159,7 @@ fn other_install_failures_keep_their_detail(cx: &mut TestAppContext) {
 fn a_failed_restore_tells_the_user_how_to_finish_it(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let reported = install(
-        fakes(
-            dir.path(),
-            "echo hold >> log",
-            "exit 1",
-            "read line; exit 3",
-        ),
+        fakes(dir.path(), "false", "echo hold >> log", "exit 3", "exit 1"),
         cx,
     );
 
@@ -187,6 +189,83 @@ fn a_change_while_a_command_runs_settles_on_the_latest_wish(cx: &mut TestAppCont
     assert!(reported.borrow().is_empty());
 }
 
+#[gpui::test]
+fn a_failed_hold_keeps_the_command_detail(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let reported = install(
+        fakes(
+            dir.path(),
+            "false",
+            "test -e rule || exit 1; echo 'pmset: denied' >&2; exit 2",
+            "true",
+            "touch rule",
+        ),
+        cx,
+    );
+
+    want_now(true, &reported, cx);
+    cx.run_until_parked();
+    assert!(!held(cx));
+    let reported = reported.borrow();
+    assert!(matches!(
+        reported.as_slice(),
+        [Failure::Hold(Error::LidCommandFailed { operation: "keep the Mac running with the lid closed", status, detail })]
+            if status.code() == Some(2) && detail == "pmset: denied"
+    ));
+}
+
+#[gpui::test]
+fn sleep_disabled_by_another_holder_is_left_alone(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let reported = install(
+        fakes(
+            dir.path(),
+            "true",
+            "echo hold >> log",
+            "echo release >> log",
+            "echo install >> log",
+        ),
+        cx,
+    );
+
+    want_now(true, &reported, cx);
+    cx.run_until_parked();
+    assert!(!held(cx));
+    assert_eq!(log(dir.path()), "");
+    let reported = reported.borrow();
+    assert!(matches!(
+        reported.as_slice(),
+        [Failure::Hold(Error::LidHeldElsewhere)]
+    ));
+}
+
+/// The owner can die while the disable still runs; the watcher must restore
+/// after it, not before.
+#[test]
+fn an_owner_gone_mid_disable_still_restores_afterwards() {
+    let dir = tempfile::tempdir().unwrap();
+    let commands = fakes(
+        dir.path(),
+        "false",
+        "while [ ! -e go ]; do sleep 0.01; done; echo hold >> log",
+        "echo release >> log",
+        "true",
+    );
+    let mut watcher = command(&commands.watcher())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(watcher.stdin.take());
+    drop(watcher.stdout.take());
+    drop(watcher.stderr.take());
+    std::fs::write(dir.path().join("go"), "").unwrap();
+
+    assert!(watcher.wait().unwrap().success());
+    assert_eq!(log(dir.path()), "hold\nrelease\n");
+}
+
 #[test]
 fn the_rule_names_only_the_two_pmset_commands_by_uid() {
     assert_eq!(
@@ -196,7 +275,18 @@ fn the_rule_names_only_the_two_pmset_commands_by_uid() {
     let commands = Commands::default();
     assert_eq!(
         commands.disable_sleep,
-        ["/usr/bin/sudo", "-n", "/usr/bin/pmset", "disablesleep", "1"]
+        "/usr/bin/sudo -n /usr/bin/pmset disablesleep 1"
     );
-    assert!(commands.watcher[2].ends_with("/usr/bin/sudo -n /usr/bin/pmset disablesleep 0"));
+    assert_eq!(
+        commands.restore_sleep,
+        "/usr/bin/sudo -n /usr/bin/pmset disablesleep 0"
+    );
+}
+
+#[test]
+fn each_user_gets_their_own_rule_file() {
+    assert_eq!(rule_path(501), "/etc/sudoers.d/herdr-gpui-501");
+    assert_ne!(rule_path(501), rule_path(502));
+    let install = &Commands::default().install_rule[2];
+    assert!(install.contains(&format!("> {}", rule_path(uid()))));
 }

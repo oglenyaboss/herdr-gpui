@@ -83,6 +83,10 @@ pub enum Error {
     )]
     LidPasswordCancelled,
     #[error(
+        "Sleep with the lid closed is already off, set by another Herdr or app. If nothing holds it, run `sudo pmset disablesleep 0`."
+    )]
+    LidHeldElsewhere,
+    #[error(
         "Sleep with the lid closed may still be off ({0}). Run `sudo pmset disablesleep 0` to restore it."
     )]
     LidRelease(std::process::ExitStatus),
